@@ -16,7 +16,7 @@ redisClient.on('error', (err) => {
 });
 
 const CACHE_KEY = 'top_interests';
-const CACHE_EXPIRATION = 3600; // 1시간
+const CACHE_EXPIRATION = 300; // 1시간
 
 export const getTopInterests = async (req, res) => {
     console.log('In getTopInterests');
@@ -43,7 +43,7 @@ export const getTopInterests = async (req, res) => {
         await redisClient.setex(CACHE_KEY, CACHE_EXPIRATION, JSON.stringify(topInterests));
 
         res.status(200).json({ topInterests });
-        
+
     } catch (error) {
         console.error('Failed to fetch top interests:', error);
         res.status(500).json({ message: 'Failed to fetch top interests' });
