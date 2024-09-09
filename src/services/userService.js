@@ -1,11 +1,14 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'; // AWS S3 클라이언트 라이브러리 가져오기
 import multer from 'multer';
-import { v4 as uuidv4 } from 'uuid';
+import { Worker } from 'worker_threads';
 
 import config from '../config/config.js'; // 설정 파일 가져오기
 import User from '../models/User.js'; // 사용자 모델 가져오기
 
 import { redisClient } from '../../server.js';
+
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // S3 클라이언트 설정
 const s3 = new S3Client({
@@ -25,65 +28,49 @@ const upload = multer({
 // 파일 업로드 미들웨어 설정
 export const uploadMiddleware = upload.single('profileImage');
 
-// 파일을 S3에 업로드하는 함수
-const uploadFileToS3 = async (file) => {
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-    // S3 업로드를 위한 파라미터 설정
-    const params = {
-        Bucket: config.AWS_BUCKET_NAME, // 업로드할 S3 버킷 이름
-        Key: `img/${uuidv4()}-${file.originalname}`, // S3에 저장될 파일의 경로와 이름
-        Body: file.buffer, // 업로드할 파일의 데이터
-        ContentType: file.mimetype, // 파일의 MIME 타입
-    };
-
-    // S3에 파일 업로드를 위한 명령 생성
-    const command = new PutObjectCommand(params);
-
-    // S3에 파일 업로드 명령 전송
-    const data = await s3.send(command);
-
-    // 업로드된 파일의 URL 반환
-    return `https://${config.AWS_BUCKET_NAME}.s3.${config.AWS_REGION}.amazonaws.com/${params.Key}`;
-};
-
-// 사용자 프로필을 업데이트하는 함수
+// updateUserProfile 함수 수정
 export const updateUserProfile = async (userId, file, interests, mbti) => {
     try {
-        let profileImageUrl = null;
-
-        // 파일이 존재하면 S3에 업로드하고 URL을 얻음
-        if (file) {
-            profileImageUrl = await uploadFileToS3(file);
-        }
-
-        // 업데이트할 데이터를 저장할 객체
-        const updateData = {};
-        if (profileImageUrl) {
-            updateData.profileImage = profileImageUrl;
-        }
-
-        // 관심사가 있으면 업데이트할 데이터에 추가
-        if (interests) {
-            updateData.interests = interests;
-        }
-
-        if (mbti) {
-            updateData.mbti = mbti; // MBTI 추가
-        }
-
-        // 사용자의 프로필을 업데이트
-        const updatedUser = await User.findByIdAndUpdate(
-            userId,
-            updateData,
-            { new: true }
-        );
-
-        // 업데이트된 사용자 정보 반환
-        return updatedUser;
+      const updateData = {};
+      if (interests) updateData.interests = interests;
+      if (mbti) updateData.mbti = mbti;
+  
+      // 이미지 업로드를 비동기적으로 처리
+      if (file) {
+        const worker = new Worker(path.join(__dirname, '..', 'workers', 'imageUploadWorker.js'), {
+          workerData: { file },
+          type: 'module'
+        });
+      
+        worker.on('message', async (result) => {
+          if (result.error) {
+            console.error('Worker error:', result.error);
+          } else {
+            await User.findByIdAndUpdate(userId, { profileImage: result }, { new: true });
+          }
+        });
+      
+        worker.on('error', (error) => {
+          console.error('Worker error:', error);
+        });
+      
+        worker.on('exit', (code) => {
+          if (code !== 0) {
+            console.error(`Worker stopped with exit code ${code}`);
+          }
+        });
+      }
+  
+      // 이미지 외 다른 정보 즉시 업데이트
+      const updatedUser = await User.findByIdAndUpdate(userId, updateData, { new: true });
+      return updatedUser;
     } catch (error) {
-        throw new Error('Error updating user profile: ' + error.message);
+      throw new Error('Error updating user profile: ' + error.message);
     }
-};
+  };
 
 // 사용자 정보를 조회하는 함수
 export const getUserProfile = async (userId) => {
