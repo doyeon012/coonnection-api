@@ -50,10 +50,10 @@ const uploadFileToS3 = async (file) => {
 // 업로드 성공 시 이미지 URL을 전송, 실패 시 에러 메시지를 전송
 (async () => {
   try {
-    const { file } = workerData; // workerData에서 전달된 파일 데이터를 가져옴
+    const { file, userId  } = workerData; // workerData에서 전달된 파일 데이터를 가져옴
 
     const profileImageUrl = await uploadFileToS3(file); // S3에 파일 업로드 후 URL 반환
-    parentPort.postMessage(profileImageUrl); // 업로드 성공 시 결과 URL을 메인 스레드에 전달
+    parentPort.postMessage(profileImageUrl, userId ); // 업로드 성공 시 결과 URL을 메인 스레드에 전달
   } catch (error) {
     parentPort.postMessage({ error: error.message }); // 에러 발생 시 에러 메시지를 메인 스레드로 전달
   }

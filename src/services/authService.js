@@ -1,7 +1,4 @@
-import { S3Client } from '@aws-sdk/client-s3'; // AWS S3 클라이언트 라이브러리 가져오기
-import { Upload } from '@aws-sdk/lib-storage'; // AWS S3 업로드 라이브러리 가져오기
 import multer from 'multer';
-import { v4 as uuidv4 } from 'uuid';
 import config from '../config/config.js'; // 설정 파일 가져오기
 import User from '../models/User.js';
 import bcrypt from 'bcryptjs'; // 비밀번호 해시화를 위한 bcryptjs 라이브러리 가져오기
@@ -38,42 +35,15 @@ export const generateToken = (user) => {
     );
 };
 
-// 회원가입 기능 구현
 export const register = async (userData) => {
-    const {
-        username,
-        password,
-        name,
-        email,
-        interests,
-        interests2, // interests2 필드 추가
-        nickname,
-        profileImage,
-        mbti,
-    } = userData;
+    
+    // 사용자로부터 받은 데이터를 구조분해 할당
+    const { username, password, name, email, interests, interests2, nickname, profileImage, mbti } = userData;
 
-    let profileImageUrl = null; //프로필 이미지 URL 초기화
     try {
-        if (profileImage) {
-            const worker = new Worker(path.join(__dirname, '..', 'workers', 'imageUploadWorker.js'), {
-                workerData: { file: profileImage },
-                type: 'module'
-            });
-
-            profileImageUrl = await new Promise((resolve, reject) => {
-                worker.on('message', resolve);
-                worker.on('error', reject);
-                worker.on('exit', (code) => {
-                    if (code !== 0)
-                        reject(new Error(`Worker stopped with exit code ${code}`));
-                });
-            });
-
-            if (typeof profileImageUrl === 'object' && profileImageUrl.error) {
-                throw new Error(profileImageUrl.error);
-            }
-        }
-
+        
+        // 새로운 사용자 객체 생성, 프로필 이미지는 처음에 null로 설정
+        // 사용자 정보 즉시 저장
         const user = new User({
             username,
             password,
@@ -82,14 +52,40 @@ export const register = async (userData) => {
             interests,
             interests2,
             nickname,
-            profileImage: profileImageUrl,
             mbti,
+            profileImage: null // Initially set to null
         });
 
-        await user.save();
-        const token = generateToken(user);
+        // 데이터베이스에 사용자 저장
+        const savedUser = await user.save();
 
-        return { token, user };
+        // 토큰 생성 (사용자의 세션을 유지하기 위한 JWT 등)
+        // 토큰 즉시 생성
+        const token = generateToken(savedUser);
+
+
+        // 프로필 이미지가 있으면 백그라운드에서 이미지 업로드를 시작
+        // 이미지 업로드 백그라운드 처리
+        if (profileImage) {
+            const worker = new Worker(path.join(__dirname, '..', 'workers', 'imageUploadWorker.js'), {
+                workerData: { file: profileImage, userId: savedUser._id },
+                type: 'module'
+            });
+
+            worker.on('message', async ({ url, userId }) => {
+                try {
+                    await User.findByIdAndUpdate(userId, { profileImage: url });
+                    console.log(`Updated profile image for user ${userId}`);
+                } catch (error) {
+                    console.error('Error updating user profile image:', error);
+                }
+            });
+
+            worker.on('error', console.error);
+        }
+
+        return { token, user: savedUser };
+
     } catch (error) {
         console.error('Error during registration:', error);
         throw new Error(error.message);
