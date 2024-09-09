@@ -6,15 +6,14 @@ import config from '../config/config.js'; // 설정 파일 가져오기
 import User from '../models/User.js';
 import bcrypt from 'bcryptjs'; // 비밀번호 해시화를 위한 bcryptjs 라이브러리 가져오기
 import jwt from 'jsonwebtoken'; // JSON Web Token 라이브러리 가져오기
+import { Worker } from 'worker_threads';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// S3 클라이언트 설정
-const s3 = new S3Client({
-    region: config.AWS_REGION, //AWS 리전 설정
-    credentials: {
-        accessKeyId: config.AWS_ACCESS_KEY, // AWS 액세스 키 설정
-        secretAccessKey: config.AWS_SECRET_KEY, // AWS 시크릿 키 설정
-    },
-});
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+
 
 // 파일 업로드 객체 생성 (메모리에 저장)
 const upload = multer({
@@ -54,44 +53,34 @@ export const register = async (userData) => {
     } = userData;
 
     let profileImageUrl = null; //프로필 이미지 URL 초기화
-    if (profileImage) {
-        if (!profileImage.buffer) {
-            throw new Error('Profile image buffer is undefined');
-        }
-
-        // s3에 업로드할 이미지의 설정 정의
-        const imageId = uuidv4(); // 이미지 ID 생성
-        const uploadParams = {
-            Bucket: config.AWS_BUCKET_NAME, // S3 버킷 이름
-            Key: `img/${imageId}_${profileImage.originalname}`, // 이미지 키 (경로)
-            Body: profileImage.buffer, // 이미지 데이터
-            ContentType: profileImage.mimetype, // 이미지 MIME 타입
-        };
-
-        try {
-            // S3에 이미지 업로드
-            const parallelUploads3 = new Upload({
-                client: s3,
-                params: uploadParams,
-                leavePartsOnError: false,
+    try {
+        if (profileImage) {
+            const worker = new Worker(path.join(__dirname, '..', 'workers', 'imageUploadWorker.js'), {
+                workerData: { file: profileImage },
+                type: 'module'
             });
 
-            const data = await parallelUploads3.done(); // 업로드 완료
-            profileImageUrl = `https://${config.AWS_BUCKET_NAME}.s3.${config.AWS_REGION}.amazonaws.com/${uploadParams.Key}`; // 프로필 이미지 URL 설정
-        } catch (error) {
-            console.error('Error uploading image to S3:', error);
-            throw new Error('Error uploading image to S3');
-        }
-    }
+            profileImageUrl = await new Promise((resolve, reject) => {
+                worker.on('message', resolve);
+                worker.on('error', reject);
+                worker.on('exit', (code) => {
+                    if (code !== 0)
+                        reject(new Error(`Worker stopped with exit code ${code}`));
+                });
+            });
 
-    try {
+            if (typeof profileImageUrl === 'object' && profileImageUrl.error) {
+                throw new Error(profileImageUrl.error);
+            }
+        }
+
         const user = new User({
             username,
             password,
             name,
             email,
             interests,
-            interests2, // interests2 필드 추가
+            interests2,
             nickname,
             profileImage: profileImageUrl,
             mbti,
@@ -102,7 +91,7 @@ export const register = async (userData) => {
 
         return { token, user };
     } catch (error) {
-        console.error('Error saving user to database:', error);
+        console.error('Error during registration:', error);
         throw new Error(error.message);
     }
 };
