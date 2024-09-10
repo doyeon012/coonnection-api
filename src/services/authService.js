@@ -1,20 +1,16 @@
-import { S3Client } from '@aws-sdk/client-s3'; // AWS S3 클라이언트 라이브러리 가져오기
-import { Upload } from '@aws-sdk/lib-storage'; // AWS S3 업로드 라이브러리 가져오기
 import multer from 'multer';
-import { v4 as uuidv4 } from 'uuid';
 import config from '../config/config.js'; // 설정 파일 가져오기
 import User from '../models/User.js';
 import bcrypt from 'bcryptjs'; // 비밀번호 해시화를 위한 bcryptjs 라이브러리 가져오기
 import jwt from 'jsonwebtoken'; // JSON Web Token 라이브러리 가져오기
+import { Worker } from 'worker_threads';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-// S3 클라이언트 설정
-const s3 = new S3Client({
-    region: config.AWS_REGION, //AWS 리전 설정
-    credentials: {
-        accessKeyId: config.AWS_ACCESS_KEY, // AWS 액세스 키 설정
-        secretAccessKey: config.AWS_SECRET_KEY, // AWS 시크릿 키 설정
-    },
-});
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+
 
 // 파일 업로드 객체 생성 (메모리에 저장)
 const upload = multer({
@@ -39,70 +35,59 @@ export const generateToken = (user) => {
     );
 };
 
-// 회원가입 기능 구현
 export const register = async (userData) => {
-    const {
-        username,
-        password,
-        name,
-        email,
-        interests,
-        interests2, // interests2 필드 추가
-        nickname,
-        profileImage,
-        mbti,
-    } = userData;
-
-    let profileImageUrl = null; //프로필 이미지 URL 초기화
-    if (profileImage) {
-        if (!profileImage.buffer) {
-            throw new Error('Profile image buffer is undefined');
-        }
-
-        // s3에 업로드할 이미지의 설정 정의
-        const imageId = uuidv4(); // 이미지 ID 생성
-        const uploadParams = {
-            Bucket: config.AWS_BUCKET_NAME, // S3 버킷 이름
-            Key: `img/${imageId}_${profileImage.originalname}`, // 이미지 키 (경로)
-            Body: profileImage.buffer, // 이미지 데이터
-            ContentType: profileImage.mimetype, // 이미지 MIME 타입
-        };
-
-        try {
-            // S3에 이미지 업로드
-            const parallelUploads3 = new Upload({
-                client: s3,
-                params: uploadParams,
-                leavePartsOnError: false,
-            });
-
-            const data = await parallelUploads3.done(); // 업로드 완료
-            profileImageUrl = `https://${config.AWS_BUCKET_NAME}.s3.${config.AWS_REGION}.amazonaws.com/${uploadParams.Key}`; // 프로필 이미지 URL 설정
-        } catch (error) {
-            console.error('Error uploading image to S3:', error);
-            throw new Error('Error uploading image to S3');
-        }
-    }
+    
+    // 사용자로부터 받은 데이터를 구조분해 할당
+    const { username, password, name, email, interests, interests2, nickname, profileImage, mbti } = userData;
 
     try {
+        
+        // 새로운 사용자 객체 생성, 프로필 이미지는 처음에 null로 설정
+        // 사용자 정보 즉시 저장
         const user = new User({
             username,
             password,
             name,
             email,
             interests,
-            interests2, // interests2 필드 추가
+            interests2,
             nickname,
-            profileImage: profileImageUrl,
             mbti,
+            profileImage: null // Initially set to null
         });
 
-        await user.save();
-        const token = generateToken(user);
+        // 데이터베이스에 사용자 저장
+        const savedUser = await user.save();
 
-        return { token, user };
+        // 토큰 생성 (사용자의 세션을 유지하기 위한 JWT 등)
+        // 토큰 즉시 생성
+        const token = generateToken(savedUser);
+
+
+        // 프로필 이미지가 있으면 백그라운드에서 이미지 업로드를 시작
+        // 이미지 업로드 백그라운드 처리
+        if (profileImage) {
+            const worker = new Worker(path.join(__dirname, '..', 'workers', 'imageUploadWorker.js'), {
+                workerData: { file: profileImage, userId: savedUser._id },
+                type: 'module'
+            });
+
+            worker.on('message', async ({ url, userId }) => {
+                try {
+                    await User.findByIdAndUpdate(userId, { profileImage: url });
+                    console.log(`Updated profile image for user ${userId}`);
+                } catch (error) {
+                    console.error('Error updating user profile image:', error);
+                }
+            });
+
+            worker.on('error', console.error);
+        }
+
+        return { token, user: savedUser };
+
     } catch (error) {
-        console.error('Error saving user to database:', error);
+        console.error('Error during registration:', error);
         throw new Error(error.message);
     }
 };

@@ -29,6 +29,7 @@
         "node-cron": "^3.0.3",
         "openai": "^4.52.3",
         "openvidu-node-client": "^2.30.0",
+        "sharp": "^0.33.5",
         "socket.io": "^4.7.5",
         "uuid": "^10.0.0",
         "ws": "^8.17.1"
